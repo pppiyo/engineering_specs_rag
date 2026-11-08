@@ -1,15 +1,16 @@
+
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.rag import ask_question
+from app.gb50060_rag import ask_gb50060_question
 
 
 app = FastAPI(
-    title="Design RAG API",
-    description="电力设计规范 PDF 检索问答 API",
-    version="1.0.0",
+    title="GB50060-2008 RAG API",
+    description="基于 GB50060-2008 高压配电装置设计规范的检索问答 API",
+    version="2.0.0",
 )
 
 
@@ -22,7 +23,7 @@ class SourceResponse(BaseModel):
     page: int | None = None
     page_image: str | None = None
     bbox: list[int] | None = None
-    line_boxes: list[Any] = []
+    line_boxes: list[Any] = Field(default_factory=list)
     coordinate_unit: str | None = None
     coordinate_scale: float | None = None
 
@@ -30,12 +31,12 @@ class SourceResponse(BaseModel):
 class AnswerResponse(BaseModel):
     question: str
     answer: str
-    sources: list[SourceResponse] = []
+    sources: list[SourceResponse] = Field(default_factory=list)
 
 
 @app.get("/")
 def home():
-    return {"message": "Design RAG API is running"}
+    return {"message": "GB50060-2008 RAG API is running"}
 
 
 @app.post("/ask", response_model=AnswerResponse)
@@ -49,7 +50,7 @@ def ask(request: QuestionRequest):
         )
 
     try:
-        result = ask_question(
+        result = ask_gb50060_question(
             question,
             return_details=True,
         )
