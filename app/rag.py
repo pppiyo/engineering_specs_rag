@@ -43,7 +43,7 @@ def extract_numbered_clauses(text):
     """
 
     pattern = re.compile(
-        r"(?m)^[ \t]*(\d+\.\d+(?:\.\d+)?)\s+"
+        r"(?m)^[ \t]*(\d+\.\d+(?:\.\d+)?)(?![\d.])[ \t]*"
     )
 
     matches = list(pattern.finditer(text))
@@ -58,12 +58,11 @@ def extract_numbered_clauses(text):
 
         start = match.start()
 
-        # 找到后面第一个编号标题作为结束位置
+        # 找到后面第一个两级或三级编号，作为当前条文的结束位置
         end = len(text)
 
-        for next_match in matches[i + 1:]:
-            end = next_match.start()
-            break
+        if i + 1 < len(matches):
+            end = matches[i + 1].start()
 
         clauses.append({
             "clause": clause_number,
@@ -73,18 +72,17 @@ def extract_numbered_clauses(text):
     return clauses
 
 
-
 def detect_relevant_sections(question, raw_results):
     """
     从语义检索结果中识别与用户问题直接相关的两级章节标题。
-    例如：问题包含“导体的选择”，检索片段出现“4.2 导体的选择”，
-    则返回 4.2。
+    支持章节编号和标题之间没有空格的 OCR 文本。
     """
+
     normalized_question = re.sub(r"\s+", "", question)
     sections = []
 
     pattern = re.compile(
-        r"(?m)^[ \t]*(\d+\.\d+)[ \t]+([^\n]+)"
+        r"(?m)^[ \t]*(\d+\.\d+)(?![\d.])[ \t]*([^\n]+)"
     )
 
     for item in raw_results:
@@ -100,33 +98,56 @@ def detect_relevant_sections(question, raw_results):
     return sections
 
 
-
-# OCR coordination
+# OCR locate
 def build_source_list(results):
-    """从检索结果中提取页面来源和 OCR 定位信息。"""
+    """
+    从检索结果中提取页面来源和 OCR 定位信息。
+    优先读取 locations，兼容旧版顶层定位字段。
+    """
 
     sources = []
     seen = set()
 
     for item in results:
-        source = {
-            "source": item.get("source"),
-            "page": item.get("page"),
-            "page_image": item.get("page_image"),
-            "bbox": item.get("bbox"),
-            "line_boxes": item.get("line_boxes") or [],
-            "coordinate_unit": item.get("coordinate_unit"),
-            "coordinate_scale": item.get("coordinate_scale"),
-        }
 
-        # 同一 PDF 的同一页只保留一条来源记录
-        key = (source["source"], source["page"])
+        # 优先使用按页面保存的定位信息
+        locations = item.get("locations") or []
 
-        if key in seen:
-            continue
+        if locations:
+            page_items = locations
 
-        seen.add(key)
-        sources.append(source)
+        else:
+            # 兼容旧记录和普通语义检索结果
+            page_items = [{
+                "source": item.get("source"),
+                "page": item.get("page"),
+                "page_image": item.get("page_image"),
+                "bbox": item.get("bbox"),
+                "line_boxes": item.get("line_boxes") or [],
+                "coordinate_unit": item.get("coordinate_unit"),
+                "coordinate_scale": item.get("coordinate_scale"),
+            }]
+
+        for location in page_items:
+
+            source = {
+                "source": location.get("source") or item.get("source"),
+                "page": location.get("page"),
+                "page_image": location.get("page_image"),
+                "bbox": location.get("bbox"),
+                "line_boxes": location.get("line_boxes") or [],
+                "coordinate_unit": location.get("coordinate_unit"),
+                "coordinate_scale": location.get("coordinate_scale"),
+            }
+
+            # 同一 PDF 的同一页只保留一条来源记录
+            key = (source["source"], source["page"])
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            sources.append(source)
 
     return sources
 
@@ -141,6 +162,7 @@ def format_question_result(answer, results, return_details=False):
         "answer": answer,
         "sources": build_source_list(results),
     }
+
 
 
 def generate_answer(question, context, section_mode=False):

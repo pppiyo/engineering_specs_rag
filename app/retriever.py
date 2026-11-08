@@ -214,8 +214,10 @@ def search_clause(clause, source=None):
     """
     按三级条文编号检索完整条文。
     支持跨页、跨 chunk 合并。
+    每个页面分别保存图片和坐标定位信息。
     例如：4.1.7
     """
+
     if not re.fullmatch(r"\d+\.\d+\.\d+", clause):
         return []
 
@@ -247,6 +249,7 @@ def search_clause(clause, source=None):
         collecting = False
         blocks = []
         pages = []
+        locations = []
 
         for item in source_records:
             text = item["text"]
@@ -275,11 +278,41 @@ def search_clause(clause, source=None):
                 blocks.append(text.strip())
                 pages.append(item["page"])
 
+                # 按页保存定位信息，避免混合不同页面的坐标
+                location = {
+                    "source": item.get("source"),
+                    "page": item.get("page"),
+                    "page_image": item.get("page_image"),
+                    "bbox": item.get("bbox"),
+                    "line_boxes": item.get("line_boxes") or [],
+                    "coordinate_unit": item.get("coordinate_unit"),
+                    "coordinate_scale": item.get("coordinate_scale"),
+                }
+
+                # 同一页面只保留一份定位记录
+                location_key = (
+                    location["source"],
+                    location["page"],
+                    location["page_image"],
+                )
+
+                existing_keys = {
+                    (
+                        loc["source"],
+                        loc["page"],
+                        loc["page_image"],
+                    )
+                    for loc in locations
+                }
+
+                if location_key not in existing_keys:
+                    locations.append(location)
+
             if next_clause:
                 break
 
         if blocks:
-            matches.append({
+            result = {
                 "text": merge_chunk_text(blocks),
                 "source": current_source,
                 "page": (
@@ -288,12 +321,23 @@ def search_clause(clause, source=None):
                     if pages else "未知页码"
                 ),
                 "chunk": -1,
-                "clause": clause
-            })
+                "clause": clause,
+                "locations": locations,
+            }
+
+            # 单页条文保留顶层定位字段，兼容现有 build_source_list()
+            if len(locations) == 1:
+                result.update({
+                    "page_image": locations[0]["page_image"],
+                    "bbox": locations[0]["bbox"],
+                    "line_boxes": locations[0]["line_boxes"],
+                    "coordinate_unit": locations[0]["coordinate_unit"],
+                    "coordinate_scale": locations[0]["coordinate_scale"],
+                })
+
+            matches.append(result)
 
     return matches
-
-
 
 def expand_clause_results(results):
     """
@@ -366,6 +410,7 @@ def search_section(section, source=None):
     先根据完整原始 chunk 去除切块重叠，
     再截取目标章节，避免章节起点截断后无法识别重叠。
     """
+
     if not re.fullmatch(r"\d+\.\d+", section):
         return []
 
@@ -374,14 +419,15 @@ def search_section(section, source=None):
     major_prefix, minor = section.split(".")
     current_number = int(minor)
 
-    # 匹配真正的两级章节标题，不匹配 4.2.1
+    # 匹配真正的两级章节标题，允许编号后没有空格
+    # (?![\d.]) 防止将 5.1.1 误识别为 5.1
     section_pattern = re.compile(
-        rf"(?m)^[ \t]*{re.escape(section)}[ \t]+[^\n]*"
+        rf"(?m)^[ \t]*{re.escape(section)}(?![\d.])[ \t]*[^\n]*"
     )
 
     # 匹配同一大章节下的其他两级标题
     end_pattern = re.compile(
-        rf"(?m)^[ \t]*{re.escape(major_prefix)}\.(\d+)[ \t]+[^\n]*"
+        rf"(?m)^[ \t]*{re.escape(major_prefix)}\.(\d+)(?![\d.])[ \t]*[^\n]*"
     )
 
     sources = list(dict.fromkeys(
@@ -471,8 +517,6 @@ def search_section(section, source=None):
             })
 
     return matches
-
-
 
 
 if __name__ == "__main__":
