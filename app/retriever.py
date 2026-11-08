@@ -211,12 +211,13 @@ def merge_chunk_text(blocks):
 
 
 
+
 def get_clause_line_boxes(clause, source, page_number, is_start_page=False):
     """
-    从坐标 OCR JSON 中提取条文在指定页面的行坐标。
+    从坐标 OCR JSON 中提取指定条文在某一页的行坐标。
 
     起始页：从目标条文编号所在行开始。
-    延续页：从页面开头开始，到下一条同级条文编号之前结束。
+    延续页：从页面第一行开始，到下一条同级条文编号之前结束。
     """
     import json
     from pathlib import Path
@@ -255,6 +256,7 @@ def get_clause_line_boxes(clause, source, page_number, is_start_page=False):
     target_pattern = re.compile(
         rf"(?<![\d.]){re.escape(clause)}(?![\d.])"
     )
+
     sibling_pattern = re.compile(
         rf"(?<![\d.]){re.escape(prefix)}\.\d+(?![\d.])"
     )
@@ -268,6 +270,7 @@ def get_clause_line_boxes(clause, source, page_number, is_start_page=False):
         if not collecting:
             if not target_pattern.search(text):
                 continue
+
             collecting = True
 
         else:
@@ -275,11 +278,23 @@ def get_clause_line_boxes(clause, source, page_number, is_start_page=False):
                 break
 
         bbox = line.get("bbox")
+
+        # 排除空文本、页码及孤立的 OCR 杂字符
+        normalized_text = re.sub(r"\s+", "", text)
+
+        if not normalized_text:
+            continue
+
+        if re.fullmatch(r"\d+", normalized_text):
+            continue
+
+        if re.fullmatch(r"[+|iIl丨]+\.?", normalized_text):
+            continue
+
         if bbox and len(bbox) == 4:
             selected_boxes.append(bbox)
 
     return selected_boxes or None
-
 
 
 
@@ -379,8 +394,33 @@ def search_clause(clause, source=None):
                     for loc in locations
                 }
 
+
                 if location_key not in existing_keys:
+                    # 第一张页面是条文起始页，后续新页面是延续页
+                    is_start_page = len(locations) == 0
+
+                    clause_boxes = get_clause_line_boxes(
+                        clause,
+                        current_source,
+                        item["page"],
+                        is_start_page=is_start_page,
+                    )
+
+                    if clause_boxes:
+                        location["line_boxes"] = clause_boxes
+
+                        location["bbox"] = [
+                            min(box[0] for box in clause_boxes),
+                            min(box[1] for box in clause_boxes),
+                            max(box[2] for box in clause_boxes),
+                            max(box[3] for box in clause_boxes),
+                        ]
+
                     locations.append(location)
+
+
+
+
 
             if next_clause:
                 break
@@ -412,6 +452,9 @@ def search_clause(clause, source=None):
             matches.append(result)
 
     return matches
+
+
+
 
 def expand_clause_results(results):
     """
