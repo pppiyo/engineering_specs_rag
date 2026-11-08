@@ -210,6 +210,80 @@ def merge_chunk_text(blocks):
     return merged.strip()
 
 
+
+def get_clause_line_boxes(clause, source, page_number, is_start_page=False):
+    """
+    从坐标 OCR JSON 中提取条文在指定页面的行坐标。
+
+    起始页：从目标条文编号所在行开始。
+    延续页：从页面开头开始，到下一条同级条文编号之前结束。
+    """
+    import json
+    from pathlib import Path
+
+    coordinate_file = (
+        Path(__file__).resolve().parent.parent
+        / "data"
+        / "ocr_original"
+        / f"{Path(source).stem}_coordinates.json"
+    )
+
+    if not coordinate_file.exists():
+        return None
+
+    try:
+        data = json.loads(
+            coordinate_file.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    pages = data.get("pages", {})
+    page_data = pages.get(str(page_number))
+
+    if page_data is None:
+        page_data = pages.get(page_number)
+
+    if not page_data:
+        return None
+
+    lines = page_data.get("lines", [])
+
+    parts = clause.split(".")
+    prefix = ".".join(parts[:-1])
+
+    target_pattern = re.compile(
+        rf"(?<![\d.]){re.escape(clause)}(?![\d.])"
+    )
+    sibling_pattern = re.compile(
+        rf"(?<![\d.]){re.escape(prefix)}\.\d+(?![\d.])"
+    )
+
+    selected_boxes = []
+    collecting = not is_start_page
+
+    for line in lines:
+        text = line.get("text", "")
+
+        if not collecting:
+            if not target_pattern.search(text):
+                continue
+            collecting = True
+
+        else:
+            if sibling_pattern.search(text):
+                break
+
+        bbox = line.get("bbox")
+        if bbox and len(bbox) == 4:
+            selected_boxes.append(bbox)
+
+    return selected_boxes or None
+
+
+
+
+
 def search_clause(clause, source=None):
     """
     按三级条文编号检索完整条文。
