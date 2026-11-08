@@ -1,0 +1,48 @@
+{
+  "ids": [
+    "test_8_13.pdf_p1_c0",
+    "test_8_13.pdf_p2_c0",
+    "test_8_13.pdf_p3_c0",
+    "test_8_13.pdf_p4_c0",
+    "test_8_13.pdf_p4_c1",
+    "test_8_13.pdf_p5_c0",
+    "test_8_13.pdf_p6_c0"
+  ],
+  "metadatas": [
+    {
+      "page": 1,
+      "chunk": 0,
+      "source": "test_8_13.pdf"
+    },
+    {
+      "source": "test_8_13.pdf",
+      "page": 2,
+      "chunk": 0
+    },
+    {
+      "page": 3,
+      "chunk": 0,
+      "source": "test_8_13.pdf"
+    },
+    {
+      "source": "test_8_13.pdf",
+      "page": 4,
+      "chunk": 0
+    },
+    {
+      "page": 4,
+      "source": "test_8_13.pdf",
+      "chunk": 1
+    },
+    {
+      "source": "test_8_13.pdf",
+      "page": 5,
+      "chunk": 0
+    },
+    {
+      "chunk": 0,
+      "source": "test_8_13.pdf",
+      "page": 6
+    }
+  ]
+}
