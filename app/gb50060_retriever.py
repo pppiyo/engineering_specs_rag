@@ -499,27 +499,6 @@ def search_gb50060_documents(question, top_k=5):
         if len(combined_results) >= top_k:
             break
 
-    # # 精确条文优先，语义结果补充，并按页面和 chunk 去重
-    # combined_results = []
-    # seen = set()
-
-    # for item in exact_results + semantic_results:
-        # metadata = item["metadata"]
-
-        # key = (
-        #     metadata.get("page"),
-        #     metadata.get("chunk"),
-        # )
-
-        # if key in seen:
-        #     continue
-
-        # seen.add(key)
-        # combined_results.append(item)
-
-        # if len(combined_results) >= top_k:
-        #     break
-
     # 统一生成页面图片和高亮来源
     page_index = load_page_index()
 
@@ -574,7 +553,3 @@ def build_gb50060_source_list(results):
         sources.append(source)
 
     return sources
-
-
-
-
