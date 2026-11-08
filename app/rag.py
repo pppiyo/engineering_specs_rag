@@ -100,6 +100,49 @@ def detect_relevant_sections(question, raw_results):
     return sections
 
 
+
+# OCR coordination
+def build_source_list(results):
+    """从检索结果中提取页面来源和 OCR 定位信息。"""
+
+    sources = []
+    seen = set()
+
+    for item in results:
+        source = {
+            "source": item.get("source"),
+            "page": item.get("page"),
+            "page_image": item.get("page_image"),
+            "bbox": item.get("bbox"),
+            "line_boxes": item.get("line_boxes") or [],
+            "coordinate_unit": item.get("coordinate_unit"),
+            "coordinate_scale": item.get("coordinate_scale"),
+        }
+
+        # 同一 PDF 的同一页只保留一条来源记录
+        key = (source["source"], source["page"])
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        sources.append(source)
+
+    return sources
+
+
+def format_question_result(answer, results, return_details=False):
+    """兼容原有字符串返回，同时支持结构化 API 返回。"""
+
+    if not return_details:
+        return answer
+
+    return {
+        "answer": answer,
+        "sources": build_source_list(results),
+    }
+
+
 def generate_answer(question, context, section_mode=False):
     """根据检索内容生成回答，不负责引用规范原文。"""
 
@@ -197,7 +240,7 @@ def generate_answer(question, context, section_mode=False):
 
 
 
-def ask_question(question):
+def ask_question(question, return_details=False):
     """检索规范内容：条文编号直接返回原文，其他问题由模型解释。"""
 
     clause = detect_clause(question)
@@ -219,7 +262,11 @@ def ask_question(question):
         )
 
         if not results:
-            return f"知识库中没有找到条文 {clause}。"
+            return format_question_result(
+                f"知识库中没有找到章节 {section}。",
+                [],
+                return_details
+            )
 
         citation_parts = []
 
@@ -230,9 +277,15 @@ def ask_question(question):
                 f"{item['text']}"
             )
 
-        return (
+        answer = (
             f"【条文原文：{clause}】\n\n"
             + "\n\n".join(citation_parts)
+        )
+
+        return format_question_result(
+            answer,
+            results,
+            return_details
         )
 
     # ==========================================
@@ -296,14 +349,18 @@ def ask_question(question):
                         if phrase in normalized_text:
                             score += n
 
-                if score > 0:
-                    candidates.append({
-                        "clause": clause_item["clause"],
-                        "text": text,
-                        "source": item["source"],
-                        "page": item["page"],
-                        "score": score
-                    })
+                candidates.append({
+                    "clause": clause_item["clause"],
+                    "text": text,
+                    "source": item["source"],
+                    "page": item["page"],
+                    "score": score,
+                    "page_image": item.get("page_image"),
+                    "bbox": item.get("bbox"),
+                    "line_boxes": item.get("line_boxes") or [],
+                    "coordinate_unit": item.get("coordinate_unit"),
+                    "coordinate_scale": item.get("coordinate_scale"),
+                })
 
         candidates.sort(
             key=lambda x: x["score"],
@@ -333,7 +390,12 @@ def ask_question(question):
             results.append({
                 "text": item["text"],
                 "source": item["source"],
-                "page": item["page"]
+                "page": item["page"],
+                "page_image": item.get("page_image"),
+                "bbox": item.get("bbox"),
+                "line_boxes": item.get("line_boxes") or [],
+                "coordinate_unit": item.get("coordinate_unit"),
+                "coordinate_scale": item.get("coordinate_scale"),
             })
 
             if len(results) >= 5:
@@ -359,7 +421,12 @@ def ask_question(question):
                 results.append({
                     "text": item["text"],
                     "source": item["source"],
-                    "page": item["page"]
+                    "page": item["page"],
+                    "page_image": item.get("page_image"),
+                    "bbox": item.get("bbox"),
+                    "line_boxes": item.get("line_boxes") or [],
+                    "coordinate_unit": item.get("coordinate_unit"),
+                    "coordinate_scale": item.get("coordinate_scale"),
                 })
 
         # 对合并后的结果去重
@@ -395,7 +462,12 @@ def ask_question(question):
                 unique_results.append({
                     "text": clause_item["text"],
                     "source": item["source"],
-                    "page": item["page"]
+                    "page": item["page"],
+                    "page_image": item.get("page_image"),
+                    "bbox": item.get("bbox"),
+                    "line_boxes": item.get("line_boxes") or [],
+                    "coordinate_unit": item.get("coordinate_unit"),
+                    "coordinate_scale": item.get("coordinate_scale"),
                 })
 
         results = unique_results
@@ -472,7 +544,18 @@ def ask_question(question):
             )
         )
 
-    return final_answer
+    # 自然语言问题：页面来源使用原始语义检索结果
+    # 章节和条文编号：页面来源使用对应的精确检索结果
+    if not clause and not section:
+        source_results = raw_results
+    else:
+        source_results = results
+
+    return format_question_result(
+        final_answer,
+        source_results,
+        return_details
+    )
 
 
 
