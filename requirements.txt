@@ -1,0 +1,10 @@
+chromadb
+fastapi
+uvicorn[standard]
+streamlit
+pymupdf
+requests
+python-dotenv
+pydantic
+pytesseract
+Pillow
