@@ -217,6 +217,9 @@ def generate_answer(question, context, section_mode=False):
     print("User Prompt 字符数：", len(user_prompt))
     print("完整 Prompt 字符数：", len(system_prompt) + len(user_prompt))
 
+
+    t0 = time.perf_counter()
+
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/chat",
         json={
@@ -240,6 +243,8 @@ def generate_answer(question, context, section_mode=False):
         },
         timeout=(10, 600)
     )
+
+    print("Ollama HTTP实际耗时：", round(time.perf_counter() - t0, 2), "秒")
 
     response.raise_for_status()
     data = response.json()
