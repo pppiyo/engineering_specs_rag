@@ -183,17 +183,19 @@ def extract_relevant_clause(document, question_core):
     以条文编号作为边界：
     从目标条文编号开始，到下一条文编号之前结束。
 
-    只提取文本，不修改 OCR 内容。
+    允许条文编号首位出现 OCR 误识别字符 S，
+    仅用于边界识别，不修改原始 OCR 文本。
+
     如果无法可靠识别条文边界，则返回原始文本。
     """
 
     if not document or not question_core:
         return document
 
-    # 匹配类似 3.0.1、5.4.9 的条文编号。
-    # 要求编号出现在新的一行开头，避免匹配正文中的引用编号。
+    # 匹配类似 3.0.1、5.4.9、S.1.7 的条文编号。
+    # 编号必须出现在新的一行开头。
     clause_pattern = re.compile(
-        r"(?m)^[ \t]*(\d+(?:[ \t]*\.[ \t]*\d+){1,2})(?=[ \t　]|$)"
+        r"(?m)^[ \t]*([0-9S](?:[ \t]*\.[ \t]*\d+){1,2})(?=[ \t　]|$)"
     )
 
     matches = list(clause_pattern.finditer(document))
@@ -218,8 +220,6 @@ def extract_relevant_clause(document, question_core):
 
     # 没有找到包含核心对象的完整条文时，不冒险截断。
     return document
-
-
 def ask_gb50060_question(question, return_details=False):
     """
     基于 GB50060-2008 知识库回答问题。
