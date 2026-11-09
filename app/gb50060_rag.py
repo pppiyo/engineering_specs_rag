@@ -22,6 +22,7 @@ def normalize_text(text):
     统一字符格式并删除空白和标点。
     只用于匹配，不修改原始 OCR 文本。
     """
+
     text = unicodedata.normalize("NFKC", str(text or ""))
     text = text.lower()
 
@@ -69,6 +70,52 @@ def extract_question_core(question):
     return core
 
 
+def detect_chapter_query(question):
+    """
+    判断是否为整章查询。
+
+    支持：
+    第三章
+    第3章
+    第 3 章
+
+    返回章节数字；不是整章查询则返回 None。
+    """
+
+    question = unicodedata.normalize(
+        "NFKC",
+        str(question or ""),
+    )
+
+    match = re.search(
+        r"第\s*([一二三四五六七八九十\d]+)\s*章",
+        question,
+    )
+
+    if not match:
+        return None
+
+    value = match.group(1)
+
+    chinese_numbers = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+
+    if value.isdigit():
+        return int(value)
+
+    return chinese_numbers.get(value)
+
+
 def get_char_bigrams(text):
     """提取规范化文本的相邻字符组合。"""
 
@@ -97,12 +144,37 @@ def calculate_relevance(question, document):
     return len(overlap) / len(question_terms)
 
 
+def deduplicate_results(results):
+    """
+    按页码和原文内容去重。
+    不修改原始检索结果。
+    """
+
+    unique_results = []
+    seen = set()
+
+    for result in results:
+        metadata = result.get("metadata", {})
+        page = metadata.get("page", "未知")
+        document = result.get("document", "")
+
+        key = (str(page), document)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique_results.append(result)
+
+    return unique_results
+
+
 def select_relevant_results(question, results, min_score=0.12):
     """
-    优先使用规范化后的核心对象短语匹配。
+    综合核心短语匹配和字符二元组相关性筛选。
 
-    如果没有精确匹配，再使用字符二元组相关性筛选。
-    如果二者都没有结果，则回退原始检索结果。
+    不在筛选结果为空时回退全部结果，
+    避免无关片段进入生成模型。
     """
 
     question_core = extract_question_core(question)
@@ -110,30 +182,9 @@ def select_relevant_results(question, results, min_score=0.12):
     print("\n========== 生成前相关性筛选 ==========")
     print("问题核心对象：", question_core)
 
-    # 第一优先级：核心对象短语匹配
-    if question_core:
-        phrase_matches = []
+    results = deduplicate_results(results)
 
-        for result in results:
-            document = result.get("document", "")
-            normalized_document = normalize_text(document)
-
-            if question_core in normalized_document:
-                phrase_matches.append(result)
-
-        if phrase_matches:
-            print("匹配方式：核心对象短语匹配")
-            print("匹配结果数量：", len(phrase_matches))
-
-            for result in phrase_matches:
-                metadata = result.get("metadata", {})
-                print("匹配页码：", metadata.get("page", "未知"))
-
-            return phrase_matches
-
-    # 第二优先级：字符二元组相关性筛选
-    print("匹配方式：字符二元组相关性筛选")
-
+    selected = []
     scored_results = []
 
     for result in results:
@@ -142,69 +193,92 @@ def select_relevant_results(question, results, min_score=0.12):
         if not document:
             continue
 
-        score = calculate_relevance(question, document)
-
         metadata = result.get("metadata", {})
         page = metadata.get("page", "未知")
+        normalized_document = normalize_text(document)
+
+        phrase_match = (
+            bool(question_core)
+            and question_core in normalized_document
+        )
+
+        score = calculate_relevance(question, document)
 
         print(
             f"页码：{page}，"
-            f"相关性分数：{score:.4f}"
+            f"核心短语命中：{phrase_match}，"
+            f"二元组相关性：{score:.4f}"
         )
 
-        scored_results.append((score, result))
+        if phrase_match:
+            selected.append(result)
+        else:
+            scored_results.append((score, result))
 
-    if not scored_results:
-        return []
+    for score, result in scored_results:
+        if score >= min_score:
+            selected.append(result)
 
-    relevant_results = [
-        result
-        for score, result in scored_results
-        if score >= min_score
-    ]
+    selected = deduplicate_results(selected)
 
-    if relevant_results:
-        print("二元组筛选结果数量：", len(relevant_results))
-        return relevant_results
+    print("筛选并去重后的结果数量：", len(selected))
 
-    # 第三优先级：回退原始检索结果
-    print("没有结果达到相关性阈值，回退原始检索结果。")
+    for result in selected:
+        metadata = result.get("metadata", {})
+        print("保留页码：", metadata.get("page", "未知"))
 
-    return [
-        result
-        for _, result in scored_results
-    ]
+    if not selected:
+        print("没有结果达到相关性筛选条件。")
+
+    return selected
+
+
+def find_clause_boundaries(document):
+    """
+    识别行首条文或章节标题位置。
+
+    支持：
+    3
+    3.0
+    3.0.1
+    5.4.9
+    S.2
+    S.1.7
+
+    仅用于截取边界，不修改 OCR 原文。
+    """
+
+    clause_pattern = re.compile(
+        r"(?m)^[ \t]*"
+        r"((?:[0-9]+(?:[ \t]*\.[ \t]*[0-9]+){0,2})"
+        r"|(?:S[ \t]*\.[ \t]*[0-9]+(?:[ \t]*\.[ \t]*[0-9]+)?))"
+        r"(?=[ \t　、，.．]|$)",
+        re.IGNORECASE,
+    )
+
+    return list(clause_pattern.finditer(document))
 
 
 def extract_relevant_clause(document, question_core):
     """
-    从原始 OCR 文本中提取包含问题核心对象的条文。
+    从原始 OCR 文本中提取相关内容。
 
-    以条文编号作为边界：
-    从目标条文编号开始，到下一条文编号之前结束。
-
-    允许条文编号首位出现 OCR 误识别字符 S，
-    仅用于边界识别，不修改原始 OCR 文本。
-
-    如果无法可靠识别条文边界，则返回原始文本。
+    优先提取包含问题核心对象的编号条文。
+    如果目标内容没有编号，则尝试按段落提取。
+    无法可靠定位时返回原始文本。
     """
 
     if not document or not question_core:
         return document
 
-    # 匹配类似 3.0.1、5.4.9、S.1.7 的条文编号。
-    # 编号必须出现在新的一行开头。
-    clause_pattern = re.compile(
-        r"(?m)^[ \t]*([0-9S](?:[ \t]*\.[ \t]*\d+){1,2})(?=[ \t　]|$)"
-    )
-
-    matches = list(clause_pattern.finditer(document))
-
-    if not matches:
-        return document
-
     normalized_core = normalize_text(question_core)
 
+    if not normalized_core:
+        return document
+
+    matches = find_clause_boundaries(document)
+
+    # 第一种情况：目标内容位于有编号的条文中。
     for index, match in enumerate(matches):
         start = match.start()
 
@@ -216,13 +290,43 @@ def extract_relevant_clause(document, question_core):
         clause_text = document[start:end].strip()
 
         if normalized_core in normalize_text(clause_text):
+            print(
+                "条文截取成功：",
+                re.sub(r"\s+", "", match.group(1)),
+            )
             return clause_text
 
-    # 没有找到包含核心对象的完整条文时，不冒险截断。
+    # 第二种情况：目标内容位于没有编号的段落中。
+    paragraphs = re.split(r"\n[ \t]*\n", document)
+
+    for index, paragraph in enumerate(paragraphs):
+        if normalized_core not in normalize_text(paragraph):
+            continue
+
+        selected_parts = [paragraph]
+
+        for following in paragraphs[index + 1:]:
+            # 遇到下一条编号条文或章节标题时停止。
+            if find_clause_boundaries(following):
+                break
+
+            if following.strip():
+                selected_parts.append(following)
+
+        paragraph_text = "\n\n".join(selected_parts).strip()
+
+        print("无编号段落截取成功。")
+
+        return paragraph_text
+
+    print("未能定位完整条文或段落，保留原始文本。")
+
     return document
+
+
 def ask_gb50060_question(question, return_details=False):
     """
-    基于 GB50060-2008 知识库回答问题。
+    基于 GB50060-2008 独立知识库回答问题。
     """
 
     question = (question or "").strip()
@@ -230,7 +334,16 @@ def ask_gb50060_question(question, return_details=False):
     if not question:
         raise ValueError("问题不能为空")
 
-    # 1. 只检索 GB50060 独立知识库
+    # 1. 判断是否为整章查询。
+    chapter_number = detect_chapter_query(question)
+    is_chapter_query = chapter_number is not None
+
+    if is_chapter_query:
+        print(
+            f"\n========== 整章问答模式：第 {chapter_number} 章 =========="
+        )
+
+    # 2. 只检索 GB50060 独立知识库。
     results = search_gb50060_documents(
         question,
         top_k=3,
@@ -241,20 +354,37 @@ def ask_gb50060_question(question, return_details=False):
         sources = []
 
     else:
-        # 2. 规范化匹配并筛选相关结果
-        selected_results = select_relevant_results(
-            question,
-            results,
-        )
+        # 3. 整章查询不进行相关性筛选。
+        # 普通问题仍使用原来的筛选逻辑。
+        if is_chapter_query:
+            selected_results = deduplicate_results(results)
 
-        # 3. 提取核心对象
+            print(
+                "整章查询：跳过相关性筛选，"
+                "保留全部章节检索结果。"
+            )
+            print(
+                "整章内容 chunks 数量：",
+                len(selected_results),
+            )
+
+        else:
+            selected_results = select_relevant_results(
+                question,
+                results,
+            )
+
+        # 4. 提取问题核心对象。
         question_core = extract_question_core(question)
 
-        # 4. 从筛选结果中提取相关条文
+        # 5. 提取相关条文或段落。
         context_parts = []
         context_results = []
 
-        for index, result in enumerate(selected_results, start=1):
+        for index, result in enumerate(
+            selected_results,
+            start=1,
+        ):
             document = result.get("document", "")
             metadata = result.get("metadata", {})
             page = metadata.get("page", "未知")
@@ -262,10 +392,19 @@ def ask_gb50060_question(question, return_details=False):
             if not document:
                 continue
 
-            clause_text = extract_relevant_clause(
-                document,
-                question_core,
-            )
+            if is_chapter_query:
+                # 整章查询保留每个 chunk 的完整原文，
+                # 不调用单条条文提取函数。
+                clause_text = document
+
+            else:
+                clause_text = extract_relevant_clause(
+                    document,
+                    question_core,
+                )
+
+            if not clause_text.strip():
+                continue
 
             context_parts.append(
                 f"【规范原文 {index}｜PDF第 {page} 页】\n"
@@ -277,14 +416,35 @@ def ask_gb50060_question(question, return_details=False):
         context = "\n\n".join(context_parts)
 
         if not context.strip():
-            answer = "本次检索没有获得可用于回答的规范原文。"
-            sources = build_gb50060_source_list(selected_results)
+            answer = (
+                "本次检索没有获得可用的规范原文，"
+                "暂时无法依据 GB50060-2008 回答。"
+            )
+            sources = []
 
         else:
             print("\n========== 实际送入模型的规范原文 ==========")
             print(context)
 
-            # 5. 构造简洁、明确的生成要求
+            # 6. 构造生成要求。
+            if is_chapter_query:
+                task_instruction = """
+用户正在查询整章内容。
+
+请依据提供的章节原文，按原文的章节和条文顺序进行整理。
+不得只挑选其中一两条内容，也不得遗漏已提供的条文。
+保留原文中的条文编号、技术术语、数值和表格信息。
+如果 OCR 原文存在不清楚的地方，应明确指出，不得自行猜测。
+"""
+
+            else:
+                task_instruction = """
+用户正在查询具体技术问题。
+
+请只回答原文明确支持的内容。
+如果原文只规定了部分要求，只回答明确规定的部分。
+"""
+
             grounded_context = f"""
 你是 GB50060-2008《3～110kV高压配电装置设计规范》问答助手。
 
@@ -292,11 +452,13 @@ def ask_gb50060_question(question, return_details=False):
 
 要求：
 1. 只能依据提供的规范原文回答，不得引入其他标准或外部知识。
-2. 如果原文直接规定了相关措施，必须提取并回答，不得回答“内容不足”。
-3. OCR可能存在少量识别错误，应结合上下文理解，不要因为个别错字忽略明确的技术要求。
-4. 不得编造原文没有规定的措施、数值或技术要求。
-5. 使用简洁的条目回答，并标明条文编号。
-6. 如果原文只规定了部分要求，只回答明确规定的部分。
+2. 不得编造技术要求、数值或措施。
+3. OCR文本可能存在识别错误。不得自行猜测或改写不确定的编号、数值和技术术语。
+4. 保留原文中能够确认的条文编号。
+5. 如果提供了表格内容，应结合表格回答；没有提供相关表格时，不得推测表格数值。
+6. 如果提供的原文与问题无关，明确说明原文不足以回答，不得用相近主题内容代替答案。
+
+{task_instruction}
 
 【用户问题】
 {question}
@@ -311,7 +473,7 @@ def ask_gb50060_question(question, return_details=False):
             print("规范原文字符数：", len(context))
             print("完整上下文字符数：", len(grounded_context))
 
-            # 6. 复用现有 Ollama 模型生成函数
+            # 7. 复用现有 Ollama 模型生成函数。
             answer = generate_answer(
                 question=question,
                 context=grounded_context,
@@ -320,7 +482,7 @@ def ask_gb50060_question(question, return_details=False):
             if not answer:
                 answer = "模型未能生成有效回答，请检查检索内容。"
 
-            # 7. 来源对应实际送入模型的结果
+            # 8. 来源对应实际送入模型的结果。
             sources = build_gb50060_source_list(context_results)
 
     if return_details:
