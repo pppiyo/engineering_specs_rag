@@ -1,4 +1,3 @@
-
 """
 GB50060-2008 独立 RAG 问答模块。
 
@@ -22,7 +21,6 @@ def normalize_text(text):
     统一字符格式并删除空白和标点。
     只用于匹配，不修改原始 OCR 文本。
     """
-
     text = unicodedata.normalize("NFKC", str(text or ""))
     text = text.lower()
 
@@ -35,7 +33,6 @@ def normalize_text(text):
 
 def extract_question_core(question):
     """从问题中去掉常见提问后缀，提取核心对象描述。"""
-
     core = normalize_text(question)
 
     suffixes = [
@@ -81,7 +78,6 @@ def detect_chapter_query(question):
 
     返回章节数字；不是整章查询则返回 None。
     """
-
     question = unicodedata.normalize(
         "NFKC",
         str(question or ""),
@@ -118,7 +114,6 @@ def detect_chapter_query(question):
 
 def get_char_bigrams(text):
     """提取规范化文本的相邻字符组合。"""
-
     text = normalize_text(text)
 
     if len(text) < 2:
@@ -132,7 +127,6 @@ def get_char_bigrams(text):
 
 def calculate_relevance(question, document):
     """计算问题与规范原文的字符二元组重合率。"""
-
     question_terms = get_char_bigrams(question)
     document_terms = get_char_bigrams(document)
 
@@ -149,7 +143,6 @@ def deduplicate_results(results):
     按页码和原文内容去重。
     不修改原始检索结果。
     """
-
     unique_results = []
     seen = set()
 
@@ -176,7 +169,6 @@ def select_relevant_results(question, results, min_score=0.12):
     不在筛选结果为空时回退全部结果，
     避免无关片段进入生成模型。
     """
-
     question_core = extract_question_core(question)
 
     print("\n========== 生成前相关性筛选 ==========")
@@ -247,7 +239,6 @@ def find_clause_boundaries(document):
 
     仅用于截取边界，不修改 OCR 原文。
     """
-
     clause_pattern = re.compile(
         r"(?m)^[ \t]*"
         r"((?:[0-9]+(?:[ \t]*\.[ \t]*[0-9]+){0,2})"
@@ -267,7 +258,6 @@ def extract_relevant_clause(document, question_core):
     如果目标内容没有编号，则尝试按段落提取。
     无法可靠定位时返回原始文本。
     """
-
     if not document or not question_core:
         return document
 
@@ -328,7 +318,6 @@ def ask_gb50060_question(question, return_details=False):
     """
     基于 GB50060-2008 独立知识库回答问题。
     """
-
     question = (question or "").strip()
 
     if not question:
@@ -367,7 +356,6 @@ def ask_gb50060_question(question, return_details=False):
                 "整章内容 chunks 数量：",
                 len(selected_results),
             )
-
         else:
             selected_results = select_relevant_results(
                 question,
@@ -380,6 +368,7 @@ def ask_gb50060_question(question, return_details=False):
         # 5. 提取相关条文或段落。
         context_parts = []
         context_results = []
+        seen_clause_texts = set()
 
         for index, result in enumerate(
             selected_results,
@@ -396,22 +385,56 @@ def ask_gb50060_question(question, return_details=False):
                 # 整章查询保留每个 chunk 的完整原文，
                 # 不调用单条条文提取函数。
                 clause_text = document
-
             else:
                 clause_text = extract_relevant_clause(
                     document,
                     question_core,
                 )
 
+
             if not clause_text.strip():
                 continue
+
+            # 普通问题必须确认截取内容确实包含问题核心对象。
+            # 如果提取失败并回退了整个原始 chunk，则不送入模型。
+            if not is_chapter_query:
+                normalized_core = normalize_text(question_core)
+                normalized_clause = normalize_text(clause_text)
+
+                if (
+                    normalized_core
+                    and normalized_core not in normalized_clause
+                ):
+                    print(
+                        f"跳过无关检索结果：PDF第 {page} 页，"
+                        "未能在截取文本中找到问题核心对象。"
+                    )
+                    continue
+
+            # 跳过已经加入上下文的重复条文。
+            normalized_clause = normalize_text(clause_text)
+
+            if normalized_clause in seen_clause_texts:
+                print(f"跳过重复条文：PDF第 {page} 页")
+                continue
+
+            seen_clause_texts.add(normalized_clause)
 
             context_parts.append(
                 f"【规范原文 {index}｜PDF第 {page} 页】\n"
                 f"{clause_text}"
             )
 
-            context_results.append(result)
+
+            # 关键修改：
+            # 保存实际送入模型的条文文本，
+            # 供来源构建函数匹配 OCR 行。
+            source_result = dict(result)
+            source_result["highlight_text"] = clause_text
+            source_result["highlight_question"] = (
+                None if is_chapter_query else question
+            )
+            context_results.append(source_result)
 
         context = "\n\n".join(context_parts)
 
@@ -436,7 +459,6 @@ def ask_gb50060_question(question, return_details=False):
 保留原文中的条文编号、技术术语、数值和表格信息。
 如果 OCR 原文存在不清楚的地方，应明确指出，不得自行猜测。
 """
-
             else:
                 task_instruction = """
 用户正在查询具体技术问题。
@@ -482,7 +504,7 @@ def ask_gb50060_question(question, return_details=False):
             if not answer:
                 answer = "模型未能生成有效回答，请检查检索内容。"
 
-            # 8. 来源对应实际送入模型的结果。
+            # 8. 来源依据实际送入模型的文本重新定位高亮。
             sources = build_gb50060_source_list(context_results)
 
     if return_details:
