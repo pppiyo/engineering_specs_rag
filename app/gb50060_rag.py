@@ -32,7 +32,10 @@ def normalize_text(text):
 
 
 def extract_question_core(question):
-    """从问题中去掉常见提问后缀，提取核心对象描述。"""
+    """
+    去除常见提问表达，保留问题中的核心对象描述。
+    仅用于相关性匹配，不修改用户原始问题。
+    """
     core = normalize_text(question)
 
     suffixes = [
@@ -43,28 +46,50 @@ def extract_question_core(question):
         "有哪些措施",
         "采取哪些措施",
         "采取什么措施",
-        "有什么要求",
+        "应满足哪些要求",
+        "需要满足哪些要求",
+        "应满足什么要求",
+        "需要满足什么要求",
+        "满足哪些要求",
+        "满足什么要求",
+        "有哪些方面的要求",
+        "有哪些建筑要求",
+        "有什么建筑要求",
         "有哪些要求",
-        "有什么规定",
+        "有什么要求",
         "有哪些规定",
+        "有什么规定",
         "是什么要求",
+        "应符合什么规定",
+        "应符合哪些规定",
         "如何设置",
         "如何配置",
         "如何选择",
+        "应如何设置",
+        "应如何配置",
+        "应如何选择",
         "是什么",
         "有哪些",
         "为什么",
         "吗",
     ]
 
-    for suffix in suffixes:
-        normalized_suffix = normalize_text(suffix)
+    # 反复清理，处理连续出现的提问表达。
+    changed = True
 
-        if core.endswith(normalized_suffix):
-            core = core[:-len(normalized_suffix)]
-            break
+    while changed and core:
+        changed = False
+
+        for suffix in suffixes:
+            normalized_suffix = normalize_text(suffix)
+
+            if core.endswith(normalized_suffix):
+                core = core[:-len(normalized_suffix)]
+                changed = True
+                break
 
     return core
+
 
 
 def detect_chapter_query(question):
@@ -136,6 +161,36 @@ def calculate_relevance(question, document):
     overlap = question_terms & document_terms
 
     return len(overlap) / len(question_terms)
+
+
+def calculate_clause_relevance(question_core, clause_text):
+    """
+    计算问题核心对象与候选条文的相关性。
+
+    优先采用完整短语匹配；
+    否则采用字符二元组覆盖率。
+    不修改原始规范文本。
+    """
+    normalized_core = normalize_text(question_core)
+    normalized_clause = normalize_text(clause_text)
+
+    if not normalized_core or not normalized_clause:
+        return 0.0
+
+    # 完整短语匹配。
+    if normalized_core in normalized_clause:
+        return 1.0
+
+    core_bigrams = get_char_bigrams(normalized_core)
+    clause_bigrams = get_char_bigrams(normalized_clause)
+
+    if not core_bigrams or not clause_bigrams:
+        return 0.0
+
+    overlap = core_bigrams & clause_bigrams
+
+    return len(overlap) / len(core_bigrams)
+
 
 
 def deduplicate_results(results):
@@ -254,21 +309,18 @@ def extract_relevant_clause(document, question_core):
     """
     从原始 OCR 文本中提取相关内容。
 
-    优先提取包含问题核心对象的编号条文。
-    如果目标内容没有编号，则尝试按段落提取。
-    无法可靠定位时返回原始文本。
+    优先提取相关编号条文；
+    如果没有编号条文，再尝试提取相关段落。
+
+    使用统一的相关性标准，不要求核心对象完整连续出现。
+    无法可靠定位时返回原始文本，由后续相关性校验决定是否使用。
     """
     if not document or not question_core:
         return document
 
-    normalized_core = normalize_text(question_core)
-
-    if not normalized_core:
-        return document
-
     matches = find_clause_boundaries(document)
 
-    # 第一种情况：目标内容位于有编号的条文中。
+    # 第一种情况：从编号条文中寻找相关内容。
     for index, match in enumerate(matches):
         start = match.start()
 
@@ -279,24 +331,34 @@ def extract_relevant_clause(document, question_core):
 
         clause_text = document[start:end].strip()
 
-        if normalized_core in normalize_text(clause_text):
+        score = calculate_clause_relevance(
+            question_core,
+            clause_text,
+        )
+
+        if score >= 0.50:
             print(
                 "条文截取成功：",
                 re.sub(r"\s+", "", match.group(1)),
+                f"，相关性：{score:.4f}",
             )
             return clause_text
 
-    # 第二种情况：目标内容位于没有编号的段落中。
-    paragraphs = re.split(r"\n[ \t]*\n", document)
+    # 第二种情况：尝试按段落提取。
+    paragraphs = re.split(r"\n\s*\n", document)
 
     for index, paragraph in enumerate(paragraphs):
-        if normalized_core not in normalize_text(paragraph):
+        score = calculate_clause_relevance(
+            question_core,
+            paragraph,
+        )
+
+        if score < 0.50:
             continue
 
         selected_parts = [paragraph]
 
         for following in paragraphs[index + 1:]:
-            # 遇到下一条编号条文或章节标题时停止。
             if find_clause_boundaries(following):
                 break
 
@@ -305,13 +367,17 @@ def extract_relevant_clause(document, question_core):
 
         paragraph_text = "\n\n".join(selected_parts).strip()
 
-        print("无编号段落截取成功。")
+        print(
+            "无编号段落截取成功，"
+            f"相关性：{score:.4f}"
+        )
 
         return paragraph_text
 
-    print("未能定位完整条文或段落，保留原始文本。")
+    print("未能定位相关条文或段落，保留原始文本。")
 
     return document
+
 
 
 def ask_gb50060_question(question, return_details=False):
@@ -401,15 +467,38 @@ def ask_gb50060_question(question, return_details=False):
                 normalized_core = normalize_text(question_core)
                 normalized_clause = normalize_text(clause_text)
 
-                if (
-                    normalized_core
-                    and normalized_core not in normalized_clause
-                ):
-                    print(
-                        f"跳过无关检索结果：PDF第 {page} 页，"
-                        "未能在截取文本中找到问题核心对象。"
+                # if (
+                #     normalized_core
+                #     and normalized_core not in normalized_clause
+                # ):
+                #     print(
+                #         f"跳过无关检索结果：PDF第 {page} 页，"
+                #         "未能在截取文本中找到问题核心对象。"
+                #     )
+                #     continue
+
+                if not is_chapter_query:
+                    relevance = calculate_clause_relevance(
+                        question_core,
+                        clause_text,
                     )
-                    continue
+
+                    print(
+                        f"条文最终相关性：PDF第 {page} 页，"
+                        f"得分：{relevance:.4f}"
+                    )
+
+                    if relevance < 0.50:
+                        print(
+                            f"跳过低相关性结果：PDF第 {page} 页"
+                        )
+                        continue
+
+
+
+
+
+
 
             # 跳过已经加入上下文的重复条文。
             normalized_clause = normalize_text(clause_text)
