@@ -1,11 +1,12 @@
-test cases:
+# About
+Making scanned electrical engineering standards searchable and accessible through RAG, powered by PDF, OCR, ChromaDB, and Ollama.
 
-配电装置屋内通道有什么要求？
+# Video Demo
+https://github.com/user-attachments/assets/5dd00fc7-2be0-496e-bf3b-9a6390ee2f7c
 
-屋内配电装置室的出口有什么要求？
-
-3.0.1
-
-屋外配电装置中的电气设备和绝缘子需要采取哪些措施？
-
-第7章
+# Try the following (demo searches)
+- 配电装置屋内通道有什么要求？
+- 屋内配电装置室的出口有什么要求？
+- 3.0.1
+- 屋外配电装置中的电气设备和绝缘子需要采取哪些措施？
+- 第7章
